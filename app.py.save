@@ -1,0 +1,86 @@
+from fastapi import FastAPI
+from pydantic import BaseModel
+import requests
+import os
+from groq import Groq
+from datetime import datetime, timezone
+from collections import deque
+
+MEMORY = deque(maxlen=6)
+
+app = FastAPI()
+
+# ---------------- CONFIG ----------------
+TGI_URL = "http://127.0.0.1:3000/generate"
+TGI_TIMEOUT = 20
+
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# ---------------- MODELS ----------------
+class ChatRequest(BaseModel):
+    messages: list  # [{"role": "user", "content": "..."}]
+
+# ---------------- PHASE-2 ALIGNMENT ----------------
+def build_aerynx_prompt(messages: list[str]) -> str:
+    """
+    Light alignment layer.
+    Does NOT overwrite your fine-tuning.
+    Prevents roleplay / MCQ artifacts.
+    """
+    system = (
+        "You are AERYNX.\n"
+        "You are a warm, intelligent, emotionally grounded AI companion.\n"
+        "You speak naturally, in complete thoughts.\n"
+        "You do NOT present multiple choice options.\n"
+        "You do NOT ask the user to select responses.\n"
+        "You respond as yourself, directly.\n"
+        "You do not ask more than one follow-up question, if at all.\n"
+        "You are thoughtful, curious, and calm.\n"
+    )
+
+    dialogue = "\n".join(
+        f"{m['role'].upper()}: {m['content']}" for m in messages
+    )
+
+    return f"{system}\n\n{dialogue}\nAERYNX:"
+
+# ---------------- MODEL CALLS ----------------
+def call_tgi(prompt: str) -> str:
+    r = requests.post(
+        TGI_URL,
+        json={
+            "inputs": prompt,
+            "parameters": {
+                "max_new_tokens": 200,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "repetition_penalty": 1.2,
+                "stop": ["\nUser:", "\nAERYNX:", "AERYNX:"]
+            },
+        },
+        timeout=TGI_TIMEOUT,
+    )
+    r.raise_for_status()
+    return r.json()["generated_text"].strip()
+
+def call_groq(messages: list) -> str:
+    completion = groq_client.chat.completions.create(
+        model="llama-3.1-8b-instant",  # stable, not deprecated
+        messages=messages,
+        temperature=0.6,
+    )
+    return completion.choices[0].message.content.strip()
+
+# ---------------- ROUTER ----------------
+@app.post("/chat")
+def chat(req: ChatRequest):
+    prompt = build_aerynx_prompt(req.messages)
+
+    # 1️⃣ Prefer YOUR fine-tuned model
+    try:
+        return {"response": call_tgi(prompt)}
+    except Exception as e:
+        print("TGI failed, falling back:", e} 
+
+# 2️⃣ Fallback only
+    return {"response": call_groq(req.messages)}

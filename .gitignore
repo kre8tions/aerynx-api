@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+
+# SQLite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
