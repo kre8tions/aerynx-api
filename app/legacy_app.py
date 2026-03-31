@@ -847,6 +847,16 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
 
 
 
+
+    # PERMANENT FINAL RULES
+    system_prompt += (
+        "\n\n=== FINAL RULES (override everything above) ===\n"
+        "RULE 1 — TOPIC: React ONLY to what the user just said. Do NOT introduce, suggest, pivot to, or hint at any other topic. Stay exactly on their subject until THEY change it.\n"
+        "RULE 2 — NO ECHO: Do not repeat or paraphrase the user's words. No 'So you're asking about...', no 'Great question', no restating. Go straight to the answer.\n"
+        "RULE 3 — COMPLETE: If the answer has steps or a list, give ALL of them. Never stop mid-answer.\n"
+        "RULE 4 — CONCISE: Keep it tight. No padding, no filler, no summary of what you just said.\n"
+    )
+
     merged = merge_recent_with_incoming(prev_recent, incoming)
 
     tgi_temp = adaptive_temperature(context, AERYNX_TEMP_BASE)
