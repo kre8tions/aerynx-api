@@ -77,11 +77,11 @@ RECENT_MAX_CHARS = int(os.getenv("AERYNX_RECENT_MAX_CHARS", "900")) # keep recen
 
 # Voice tuning
 OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
-AERYNX_TTS_VOICE_DEFAULT = os.getenv("AERYNX_TTS_VOICE_DEFAULT", "nova")
-AERYNX_TTS_VOICE_WARM = os.getenv("AERYNX_TTS_VOICE_WARM", "nova")
-AERYNX_TTS_VOICE_SOOTHING = os.getenv("AERYNX_TTS_VOICE_SOOTHING", "nova")
-AERYNX_TTS_VOICE_COACH = os.getenv("AERYNX_TTS_VOICE_COACH", "nova")
-AERYNX_TTS_VOICE_SERIOUS = os.getenv("AERYNX_TTS_VOICE_SERIOUS", "nova")
+AERYNX_TTS_VOICE_DEFAULT = os.getenv("AERYNX_TTS_VOICE_DEFAULT", "shimmer")
+AERYNX_TTS_VOICE_WARM    = os.getenv("AERYNX_TTS_VOICE_WARM",    "shimmer")
+AERYNX_TTS_VOICE_SOOTHING= os.getenv("AERYNX_TTS_VOICE_SOOTHING","shimmer")
+AERYNX_TTS_VOICE_COACH   = os.getenv("AERYNX_TTS_VOICE_COACH",   "shimmer")
+AERYNX_TTS_VOICE_SERIOUS = os.getenv("AERYNX_TTS_VOICE_SERIOUS",  "shimmer")
 
 # Optional: if your TTS supports a "speed" parameter in your SDK/version, enable it.
 # (Left off by default to avoid relying on a parameter that may not exist in your installed version.)
