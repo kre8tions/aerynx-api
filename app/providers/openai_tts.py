@@ -15,7 +15,7 @@ AERYNX_DEFAULT_VOICE_INSTRUCTIONS = (
 
 def openai_tts(
     text: str,
-    voice: str = "nova",
+    voice: str = "shimmer",
     instructions: str = AERYNX_DEFAULT_VOICE_INSTRUCTIONS,
 ) -> bytes:
     if not openai_client:
