@@ -5,6 +5,7 @@ import os
 import re
 import time
 import json
+import secrets
 # import sqlite3
 import base64
 from datetime import datetime, timezone
@@ -87,6 +88,34 @@ AERYNX_TTS_VOICE_SERIOUS = os.getenv("AERYNX_TTS_VOICE_SERIOUS",  "shimmer")
 # (Left off by default to avoid relying on a parameter that may not exist in your installed version.)
 TTS_SPEED_ENABLE = os.getenv("AERYNX_TTS_SPEED_ENABLE", "0") == "1"
 TTS_SPEED_DEFAULT = float(os.getenv("AERYNX_TTS_SPEED_DEFAULT", "1.15"))  # slightly faster than "calm narrator"
+
+# Supabase auth
+SUPABASE_URL      = os.getenv("SUPABASE_URL", "https://vomikghmjvuvbampperh.supabase.co")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "sb_publishable_Jcgy-MMgnOirf-0_LU9zag_vVCp29GU")
+
+# Simple user → API key store (JSON file, survives restarts)
+_USERS_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "users.json")
+
+def _load_users() -> dict:
+    try:
+        with open(_USERS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_users(users: dict):
+    os.makedirs(os.path.dirname(_USERS_FILE), exist_ok=True)
+    with open(_USERS_FILE, "w") as f:
+        json.dump(users, f)
+
+def _get_or_create_api_key(user_id: str) -> str:
+    users = _load_users()
+    if user_id in users:
+        return users[user_id]["api_key"]
+    api_key = f"sk-aerynx-{secrets.token_hex(20)}"
+    users[user_id] = {"api_key": api_key}
+    _save_users(users)
+    return api_key
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -970,6 +999,35 @@ async def stt(
     audio_bytes = await audio.read()
     text = groq_stt(audio.filename or "audio.bin", audio_bytes)
     return {"text": text}
+
+
+@app.post("/auth/register")
+@limiter.limit("20/minute")
+async def auth_register(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Exchange a Supabase JWT for a persistent AERYNX API key."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    token = authorization[7:].strip()
+    # Verify token with Supabase
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "apikey": SUPABASE_ANON_KEY,
+            },
+        )
+    if r.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user_data = r.json()
+    user_id = user_data.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Could not identify user")
+    api_key = _get_or_create_api_key(user_id)
+    return JSONResponse({"api_key": api_key})
 
 
 @app.post("/tts")
