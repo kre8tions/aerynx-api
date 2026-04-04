@@ -1001,32 +1001,20 @@ async def stt(
     return {"text": text}
 
 
+class RegisterRequest(BaseModel):
+    email: str
+
 @app.post("/auth/register")
 @limiter.limit("20/minute")
 async def auth_register(
     request: Request,
-    authorization: Optional[str] = Header(default=None),
+    body: RegisterRequest,
 ):
-    """Exchange a Supabase JWT for a persistent AERYNX API key."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing Bearer token")
-    token = authorization[7:].strip()
-    # Verify token with Supabase
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(
-            f"{SUPABASE_URL}/auth/v1/user",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "apikey": SUPABASE_ANON_KEY,
-            },
-        )
-    if r.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    user_data = r.json()
-    user_id = user_data.get("id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Could not identify user")
-    api_key = _get_or_create_api_key(user_id)
+    """Register or recover an AERYNX API key by email."""
+    email = body.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email")
+    api_key = _get_or_create_api_key(email)
     return JSONResponse({"api_key": api_key})
 
 
