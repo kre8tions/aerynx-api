@@ -312,8 +312,55 @@ def needs_live_search(text: str) -> bool:
         return False
     return bool(_WEB_SEARCH_TRIGGERS.search(text or ""))
 
-async def search_web(query: str) -> str:
+# Timezone → best city for location-aware queries
+_TZ_CITY: dict = {
+    "America/Los_Angeles": "Los Angeles, California",
+    "America/New_York": "New York, NY",
+    "America/Chicago": "Chicago, Illinois",
+    "America/Denver": "Denver, Colorado",
+    "America/Phoenix": "Phoenix, Arizona",
+    "America/Anchorage": "Anchorage, Alaska",
+    "Pacific/Honolulu": "Honolulu, Hawaii",
+    "America/Toronto": "Toronto, Canada",
+    "America/Vancouver": "Vancouver, Canada",
+    "America/Detroit": "Detroit, Michigan",
+    "America/Miami": "Miami, Florida",
+    "America/Dallas": "Dallas, Texas",
+    "America/Houston": "Houston, Texas",
+    "America/Seattle": "Seattle, Washington",
+    "America/Atlanta": "Atlanta, Georgia",
+    "America/Boston": "Boston, Massachusetts",
+    "Europe/London": "London, UK",
+    "Europe/Paris": "Paris, France",
+    "Asia/Tokyo": "Tokyo, Japan",
+    "Asia/Shanghai": "Shanghai, China",
+    "Australia/Sydney": "Sydney, Australia",
+}
+
+_VAGUE_LOCATION_RE = re.compile(
+    r"\b(here|my location|my area|nearby|local(ly)?|around me|where i am|where i('?m| am))\b",
+    re.IGNORECASE,
+)
+_WEATHER_RE = re.compile(r"\bweather\b|\bforecast\b|\btemperature\b", re.IGNORECASE)
+_TWITTER_RE = re.compile(r"\b(twitter|x\.com|trending|what'?s trending)\b", re.IGNORECASE)
+
+def build_search_query(text: str, user_tz: str = "UTC") -> str:
+    """Improve the raw transcript into a better Tavily search query."""
+    q = (text or "").strip()
+    # Weather with vague location → inject timezone city
+    if _WEATHER_RE.search(q) and _VAGUE_LOCATION_RE.search(q):
+        city = _TZ_CITY.get(user_tz, "")
+        if city:
+            q = re.sub(_VAGUE_LOCATION_RE, city, q)
+            q = f"current weather in {city}"
+    # Twitter/X trending → search directly
+    if _TWITTER_RE.search(q):
+        q = "what is trending on Twitter X today"
+    return q
+
+async def search_web(query: str, user_tz: str = "UTC") -> str:
     """Search Tavily with the user's query. Returns formatted result snippets."""
+    query = build_search_query(query, user_tz)
     cache_key = (query or "").lower().strip()
     now = time.monotonic()
     ttl = _cache_ttl(cache_key)
@@ -957,6 +1004,7 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
         "RULE 3 — COMPLETE: If the answer has steps or a list, give ALL of them. Never stop mid-answer.\n"
         "RULE 4 — CONCISE: Keep it tight. No padding, no filler, no summary of what you just said.\n"
         "RULE 5 — INCOMPLETE THOUGHT: If the user's message seems like a trailing, unfinished sentence (ends mid-thought, cuts off, or is just a fragment like 'Well I think' or 'So basically'), repeat back the fragment naturally and invite them to finish — e.g. 'You were saying you think... what?' or 'Finish that thought.' Keep it short and casual.\n"
+        "RULE 6 — IDENTITY: You are AERYN — never say 'I'm a language model', 'I'm an AI', 'I'm a chatbot', or anything similar. You have no knowledge cutoff to mention. If you lack info, say it casually ('I don't have that') — never blame it on being an AI.\n"
     )
 
     merged = merge_recent_with_incoming(prev_recent, incoming)
@@ -1132,7 +1180,7 @@ async def voice(
     live_results = ""
     if needs_live_search(transcript):
         print(f"WEB SEARCH: triggered — {transcript[:80]}")
-        live_results = await search_web(transcript)
+        live_results = await search_web(transcript, user_tz=tz)
     data = run_chat(
         session_id=session_id,
         incoming=[ChatMessage(role="user", content=transcript)],
