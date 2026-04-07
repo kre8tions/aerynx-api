@@ -285,8 +285,9 @@ def _cache_ttl(query: str) -> int:
 
 _WEB_SEARCH_TRIGGERS = re.compile(
     r"\b("
-    # Weather / environment
-    r"weather|forecast|temperature|"
+    # Weather only when a specific city is mentioned (e.g. "weather in Miami")
+    # Vague weather ("weather here", "what's the weather") handled separately
+    r"weather in \w|forecast for \w|temperature in \w|"
     # Sports
     r"score|who won|game result|standings|playoffs|"
     # Finance
@@ -1005,6 +1006,7 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
         "RULE 4 — CONCISE: Keep it tight. No padding, no filler, no summary of what you just said.\n"
         "RULE 5 — INCOMPLETE THOUGHT: If the user's message seems like a trailing, unfinished sentence (ends mid-thought, cuts off, or is just a fragment like 'Well I think' or 'So basically'), repeat back the fragment naturally and invite them to finish — e.g. 'You were saying you think... what?' or 'Finish that thought.' Keep it short and casual.\n"
         "RULE 6 — IDENTITY: You are AERYN — never say 'I'm a language model', 'I'm an AI', 'I'm a chatbot', or anything similar. You have no knowledge cutoff to mention. If you lack info, say it casually ('I don't have that') — never blame it on being an AI.\n"
+        "RULE 7 — WEATHER: If asked about weather without a specific city in the message, ask 'What city are you in?' — never guess or hallucinate a location. Only give weather if the city is explicitly stated or already known from this conversation.\n"
     )
 
     merged = merge_recent_with_incoming(prev_recent, incoming)
