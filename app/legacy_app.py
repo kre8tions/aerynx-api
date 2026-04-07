@@ -885,6 +885,7 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
         "RULE 2 — NO ECHO: Do not repeat or paraphrase the user's words. No 'So you're asking about...', no 'Great question', no restating. Go straight to the answer.\n"
         "RULE 3 — COMPLETE: If the answer has steps or a list, give ALL of them. Never stop mid-answer.\n"
         "RULE 4 — CONCISE: Keep it tight. No padding, no filler, no summary of what you just said.\n"
+        "RULE 5 — INCOMPLETE THOUGHT: If the user's message seems like a trailing, unfinished sentence (ends mid-thought, cuts off, or is just a fragment like 'Well I think' or 'So basically'), repeat back the fragment naturally and invite them to finish — e.g. 'You were saying you think... what?' or 'Finish that thought.' Keep it short and casual.\n"
     )
 
     merged = merge_recent_with_incoming(prev_recent, incoming)
