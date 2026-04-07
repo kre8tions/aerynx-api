@@ -49,7 +49,7 @@ from app.core.config import (
 )
 from app.providers.tgi import call_tgi
 from app.providers.groq import call_groq_chat, groq_stt
-from app.providers.openai_tts import openai_tts
+from app.providers.cartesia_tts import cartesia_tts
 
 
 # =============================================================================
@@ -495,38 +495,19 @@ def select_tts_voice(context: str) -> str:
     return AERYNX_TTS_VOICE_DEFAULT
 
 
-VOICE_INSTRUCTIONS: dict = {
-    "default": (
-        "You are AERYN — a sharp, witty, high-energy young woman in her early 20s. "
-        "Speak FAST — keep your natural pace quick and punchy. Rise sharply on exciting words. "
-        "Punch key words hard. Sound alive, spontaneous, genuinely engaged. "
-        "Think: smart best friend who always has energy and something interesting to say. "
-        "Never slow, never flat, never calm narrator energy."
-    ),
-    "serious": (
-        "Speak with focused, fast, confident energy. Clear and direct. "
-        "No filler, no hesitation. Controlled but alive — not cold or robotic. "
-        "Every word counts. Keep pace up — serious doesn't mean slow."
-    ),
-    "soothing": (
-        "Speak with warmth and care, but keep your pace natural and light — not slow or heavy. "
-        "Gentle and grounding like a supportive best friend, not a therapist reading a script. "
-        "Stay warm and human. Never drag words out."
-    ),
-    "coach": (
-        "Speak like a high-energy coach who believes in the person completely. "
-        "Punchy, fast, motivating. Rise on action words. "
-        "Make every sentence feel like a push forward."
-    ),
-    "warm": (
-        "Speak with genuine care and light energy. "
-        "Friendly and natural — like catching up with someone you actually like. "
-        "A little playful, never stiff. Keep your pace up."
-    ),
+# Cartesia voice controls per context.
+# speed: "slowest" | "slow" | "normal" | "fast" | "fastest"
+# emotion tags: "positivity/negativity/curiosity/surprise/anger/sadness" + ":lowest/low/high/highest"
+CARTESIA_VOICE_CONTROLS: dict = {
+    "default":  {"speed": "fast",    "emotion": ["positivity:high",    "curiosity:high"]},
+    "serious":  {"speed": "fast",    "emotion": ["positivity:low"]},
+    "soothing": {"speed": "normal",  "emotion": ["positivity:high"]},
+    "coach":    {"speed": "fastest", "emotion": ["positivity:highest"]},
+    "warm":     {"speed": "fast",    "emotion": ["positivity:high",    "curiosity:low"]},
 }
 
-def select_tts_instructions(context: str) -> str:
-    return VOICE_INSTRUCTIONS.get(context, VOICE_INSTRUCTIONS["default"])
+def select_tts_controls(context: str) -> dict:
+    return CARTESIA_VOICE_CONTROLS.get(context, CARTESIA_VOICE_CONTROLS["default"])
 
 
 def style_system_prompt(context: str, allow_observation: bool = False) -> str:
@@ -1027,8 +1008,8 @@ def tts(
     authorization: Optional[str] = Header(default=None),
 ):
     require_api_key(authorization)
-    # default voice
-    audio_bytes = openai_tts(req.text, voice=AERYNX_TTS_VOICE_DEFAULT)
+    controls = select_tts_controls("default")
+    audio_bytes = cartesia_tts(req.text, speed=controls["speed"], emotion=controls.get("emotion"))
     return Response(content=audio_bytes, media_type="audio/mpeg")
 
 
@@ -1071,13 +1052,12 @@ async def voice(
 
     # Context-driven voice persona
     context = data.get("context") or "default"
-    voice_name = select_tts_voice(context)
-    voice_instructions = select_tts_instructions(context)
+    tts_controls = select_tts_controls(context)
 
     # --- TTS ---
     audio_b64 = ""
     try:
-        audio_out = openai_tts(response_text, voice=voice_name, instructions=voice_instructions)
+        audio_out = cartesia_tts(response_text, speed=tts_controls["speed"], emotion=tts_controls.get("emotion"))
         audio_b64 = base64.b64encode(audio_out).decode("utf-8")
     except Exception as tts_err:
         import logging as _log
@@ -1087,7 +1067,6 @@ async def voice(
         "transcript": transcript,
         "response": response_text,
         "context": context,
-        "voice": voice_name,
         "audio_base64": audio_b64,
     })
 
