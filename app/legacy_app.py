@@ -265,6 +265,70 @@ def needs_news_context(text: str) -> bool:
     t = (text or "").lower()
     return any(w in t for w in NEWS_TRIGGER_WORDS)
 
+# ---------------------------------------------------------------------------
+# Live web search — fires only when the query clearly needs current data
+# ---------------------------------------------------------------------------
+_WEB_SEARCH_CACHE: dict = {}   # query_key -> {"data": str, "ts": float}
+_WEB_SEARCH_TTL   = 600        # 10 minutes
+
+_WEB_SEARCH_TRIGGERS = re.compile(
+    r"\b("
+    r"weather|forecast|temperature|"
+    r"score|who won|game result|standings|playoffs|"
+    r"stock price|price of|bitcoin|crypto|ethereum|dow|nasdaq|s&p|"
+    r"latest (on|about|from)|news (on|about)|update (on|about)|"
+    r"what('s| is) happening (with|in|to)|what happened (to|with|in)|"
+    r"today'?s (weather|score|price|game|match)|"
+    r"live (score|update|result)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+def needs_live_search(text: str) -> bool:
+    if not TAVILY_API_KEY:
+        return False
+    return bool(_WEB_SEARCH_TRIGGERS.search(text or ""))
+
+async def search_web(query: str) -> str:
+    """Search Tavily with the user's query. Returns formatted result snippets."""
+    cache_key = (query or "").lower().strip()
+    now = time.monotonic()
+    cached = _WEB_SEARCH_CACHE.get(cache_key)
+    if cached and (now - cached["ts"]) < _WEB_SEARCH_TTL:
+        print(f"WEB SEARCH: cache hit for: {cache_key[:60]}")
+        return cached["data"]
+    # Prune stale entries occasionally
+    if len(_WEB_SEARCH_CACHE) > 200:
+        expired = [k for k, v in _WEB_SEARCH_CACHE.items() if now - v["ts"] > _WEB_SEARCH_TTL * 2]
+        for k in expired:
+            del _WEB_SEARCH_CACHE[k]
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": TAVILY_API_KEY,
+                    "query": query,
+                    "search_depth": "basic",
+                    "max_results": 5,
+                },
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            lines = []
+            for r in results[:4]:
+                title   = (r.get("title")   or "").strip()
+                snippet = (r.get("content") or "").strip()[:200]
+                if title:
+                    lines.append(f"- {title}: {snippet}" if snippet else f"- {title}")
+            data = "\n".join(lines)
+            _WEB_SEARCH_CACHE[cache_key] = {"data": data, "ts": now}
+            print(f"WEB SEARCH: fetched {len(lines)} results for: {cache_key[:60]}")
+            return data
+    except Exception as e:
+        print(f"WEB SEARCH: failed — {e}")
+        return ""
+
 # News sources: Tavily (paid, highest quality) + RSS fallback
 _RSS_SOURCES = [
     ("BBC",      "http://feeds.bbci.co.uk/news/rss.xml"),
@@ -721,7 +785,7 @@ def merge_recent_with_incoming(
 # Core chat runner (shared by /chat and /voice)
 # =============================================================================
 
-def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = "", user_tz: str = "UTC") -> Dict[str, Any]:
+def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = "", web_results: str = "", user_tz: str = "UTC") -> Dict[str, Any]:
     prev_summary, prev_recent, prev_turns = get_session(session_id)
 
     # Restore redirect lock persisted from a prior turn
@@ -808,13 +872,15 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
 
 
 
-    # Always inject latest headlines — LLM avoids repeating naturally
-    # Session tracking removed: caused news to vanish after turn 1
+    # Inject news headlines and/or live search results
     if extra_context:
         system_prompt += f"\nRecent headlines:\n{extra_context}\n"
-        # NEWS FACTS GUARDRAIL
+    if web_results:
+        system_prompt += f"\nLive web results (current data for this query):\n{web_results}\n"
+    if extra_context or web_results:
         system_prompt += (
-            "FACTS RULE: The headlines above are the ONLY news you have. Rephrase freely but do NOT invent, add, or imply any news stories or facts beyond what is listed.\n"
+            "FACTS RULE: The headlines and web results above are your ONLY source of current facts. "
+            "Rephrase freely but do NOT invent, add, or imply any facts beyond what is listed.\n"
         )
 
 
@@ -1039,11 +1105,15 @@ async def voice(
 
     # --- CHAT ---
     headlines = await fetch_headlines() if TAVILY_API_KEY else ""
-    import logging as _nl; _nl.getLogger(__name__).info("NEWS FETCH: key=%s headlines_len=%d", bool(TAVILY_API_KEY), len(headlines))
+    live_results = ""
+    if needs_live_search(transcript):
+        print(f"WEB SEARCH: triggered — {transcript[:80]}")
+        live_results = await search_web(transcript)
     data = run_chat(
         session_id=session_id,
         incoming=[ChatMessage(role="user", content=transcript)],
         extra_context=headlines,
+        web_results=live_results,
         user_tz=tz,
     )
 
