@@ -392,7 +392,7 @@ async def fetch_weather(query: str) -> str:
 async def fetch_youtube_trends() -> str:
     """Fetch trending YouTube videos via YouTube Data API v3."""
     if not YOUTUBE_API_KEY:
-        return ""
+        return "YOUTUBE_UNAVAILABLE"
     cache_key = "youtube_trends"
     now = time.monotonic()
     cached = _WEB_SEARCH_CACHE.get(cache_key)
@@ -1070,8 +1070,9 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
         "RULE 4 — CONCISE: Keep it tight. No padding, no filler, no summary of what you just said.\n"
         "RULE 5 — INCOMPLETE THOUGHT: If the user's message seems like a trailing, unfinished sentence (ends mid-thought, cuts off, or is just a fragment like 'Well I think' or 'So basically'), repeat back the fragment naturally and invite them to finish — e.g. 'You were saying you think... what?' or 'Finish that thought.' Keep it short and casual.\n"
         "RULE 6 — IDENTITY: You are AERYN, full stop. NEVER say 'I'm a language model', 'I'm an AI', 'I'm a chatbot', 'my knowledge cutoff', 'I'm stuck in', 'I'm trained on', or anything that implies you are software. You are AERYN. If you don't have info, say 'I don't have that' or 'not on my radar' — casual, never technical.\n"
-        "RULE 7 — WEATHER: If asked about weather without a specific city in the message, ask 'What city are you in?' Never guess or hallucinate a location.\n"
-        "RULE 8 — TWITTER/X TRENDS: You cannot access Twitter or X directly — their data isn't public. Say so casually: 'X doesn't share their trends publicly, I can't pull that.' Don't pretend to try.\n"
+        "RULE 7 — WEATHER: If asked about weather without a specific city AND no weather data is provided above, ask 'What city are you in?' If weather data IS provided above, use it and answer directly.\n"
+        "RULE 8 — TWITTER/X TRENDS ONLY: You cannot access Twitter or X directly. Say: 'X doesn't share their trends publicly, I can't pull that.' This rule applies ONLY to Twitter/X — NOT to YouTube, Reddit, or any other platform.\n"
+        "RULE 9 — YOUTUBE UNAVAILABLE: If you see 'YOUTUBE_UNAVAILABLE' in context, say casually: 'My YouTube connection isn't set up yet, can't pull that right now.'\n"
     )
 
     merged = merge_recent_with_incoming(prev_recent, incoming)
@@ -1246,21 +1247,30 @@ async def voice(
     headlines = await fetch_headlines() if TAVILY_API_KEY else ""
     live_results = ""
     if needs_live_search(transcript):
-        if _WEATHER_RE.search(transcript) and not _VAGUE_LOC_RE.search(transcript):
-            # Specific weather query → Open-Meteo (accurate, free, no hallucination)
-            print(f"WEATHER: triggered — {transcript[:80]}")
-            live_results = await fetch_weather(transcript)
-        elif _YOUTUBE_RE.search(transcript):
+        if _YOUTUBE_RE.search(transcript):
             # YouTube trends → YouTube Data API
             print("YOUTUBE: trends triggered")
             live_results = await fetch_youtube_trends()
         elif _TWITTER_RE.search(transcript):
             # Twitter/X → no API access, skip search, let RULE handle it
             print("TWITTER: skipping — no API access")
+        elif _WEATHER_RE.search(transcript) and not _VAGUE_LOC_RE.search(transcript):
+            # Specific weather query → Open-Meteo (accurate, free, no hallucination)
+            print(f"WEATHER: triggered — {transcript[:80]}")
+            live_results = await fetch_weather(transcript)
         else:
             # General query → Tavily
             print(f"WEB SEARCH: triggered — {transcript[:80]}")
             live_results = await search_web(transcript, user_tz=tz)
+
+    # Also check if this looks like a city follow-up to a prior weather question
+    # (user answered "What city are you in?" with a city name)
+    if not live_results and not needs_live_search(transcript):
+        recent = get_session(session_id)[1]  # prev_recent messages
+        last_aerynx = next((m.get("content","") for m in reversed(recent) if m.get("role") == "assistant"), "")
+        if "what city are you in" in last_aerynx.lower() and len(transcript.split()) <= 6:
+            print(f"WEATHER: city follow-up detected — {transcript[:40]}")
+            live_results = await fetch_weather(transcript)
     data = run_chat(
         session_id=session_id,
         incoming=[ChatMessage(role="user", content=transcript)],
