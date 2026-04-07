@@ -269,7 +269,19 @@ def needs_news_context(text: str) -> bool:
 # Live web search — fires only when the query clearly needs current data
 # ---------------------------------------------------------------------------
 _WEB_SEARCH_CACHE: dict = {}   # query_key -> {"data": str, "ts": float}
-_WEB_SEARCH_TTL   = 600        # 10 minutes
+
+# Fast-changing data: weather, prices, scores
+_WEB_SEARCH_TTL_SHORT = 1800       # 30 minutes
+# Slower-changing data: news topics, events, general facts
+_WEB_SEARCH_TTL_LONG  = 21600      # 6 hours
+
+_WEB_SEARCH_FAST_RE = re.compile(
+    r"\b(weather|forecast|temperature|stock|price|bitcoin|crypto|ethereum|dow|nasdaq|s&p|score|who won|standings)\b",
+    re.IGNORECASE,
+)
+
+def _cache_ttl(query: str) -> int:
+    return _WEB_SEARCH_TTL_SHORT if _WEB_SEARCH_FAST_RE.search(query) else _WEB_SEARCH_TTL_LONG
 
 _WEB_SEARCH_TRIGGERS = re.compile(
     r"\b("
@@ -293,13 +305,14 @@ async def search_web(query: str) -> str:
     """Search Tavily with the user's query. Returns formatted result snippets."""
     cache_key = (query or "").lower().strip()
     now = time.monotonic()
+    ttl = _cache_ttl(cache_key)
     cached = _WEB_SEARCH_CACHE.get(cache_key)
-    if cached and (now - cached["ts"]) < _WEB_SEARCH_TTL:
+    if cached and (now - cached["ts"]) < ttl:
         print(f"WEB SEARCH: cache hit for: {cache_key[:60]}")
         return cached["data"]
     # Prune stale entries occasionally
     if len(_WEB_SEARCH_CACHE) > 200:
-        expired = [k for k, v in _WEB_SEARCH_CACHE.items() if now - v["ts"] > _WEB_SEARCH_TTL * 2]
+        expired = [k for k, v in _WEB_SEARCH_CACHE.items() if now - v["ts"] > _WEB_SEARCH_TTL_LONG * 2]
         for k in expired:
             del _WEB_SEARCH_CACHE[k]
     try:
