@@ -285,13 +285,24 @@ def _cache_ttl(query: str) -> int:
 
 _WEB_SEARCH_TRIGGERS = re.compile(
     r"\b("
+    # Weather / environment
     r"weather|forecast|temperature|"
+    # Sports
     r"score|who won|game result|standings|playoffs|"
+    # Finance
     r"stock price|price of|bitcoin|crypto|ethereum|dow|nasdaq|s&p|"
+    # Current events / specific topics
     r"latest (on|about|from)|news (on|about)|update (on|about)|"
-    r"what('s| is) happening (with|in|to)|what happened (to|with|in)|"
+    r"what('s| is) (happening|going on) (with|in|to)|what happened (to|with|in|at)|"
     r"today'?s (weather|score|price|game|match)|"
-    r"live (score|update|result)"
+    r"live (score|update|result)|"
+    # Award shows & entertainment events
+    r"oscars?|grammys?|emmys?|baftas?|golden globes?|vmas?|amas?|"
+    r"super bowl|world cup|stanley cup|nba finals|world series|"
+    # Broad topic queries
+    r"tell me (about|the latest|more about)|anything (about|new)|"
+    r"what'?s new (with|on|in)|what do you know about|"
+    r"who (is|are|was|were) [a-z]"
     r")\b",
     re.IGNORECASE,
 )
