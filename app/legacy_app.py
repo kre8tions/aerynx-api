@@ -313,55 +313,119 @@ def needs_live_search(text: str) -> bool:
         return False
     return bool(_WEB_SEARCH_TRIGGERS.search(text or ""))
 
-# Timezone → best city for location-aware queries
-_TZ_CITY: dict = {
-    "America/Los_Angeles": "Los Angeles, California",
-    "America/New_York": "New York, NY",
-    "America/Chicago": "Chicago, Illinois",
-    "America/Denver": "Denver, Colorado",
-    "America/Phoenix": "Phoenix, Arizona",
-    "America/Anchorage": "Anchorage, Alaska",
-    "Pacific/Honolulu": "Honolulu, Hawaii",
-    "America/Toronto": "Toronto, Canada",
-    "America/Vancouver": "Vancouver, Canada",
-    "America/Detroit": "Detroit, Michigan",
-    "America/Miami": "Miami, Florida",
-    "America/Dallas": "Dallas, Texas",
-    "America/Houston": "Houston, Texas",
-    "America/Seattle": "Seattle, Washington",
-    "America/Atlanta": "Atlanta, Georgia",
-    "America/Boston": "Boston, Massachusetts",
-    "Europe/London": "London, UK",
-    "Europe/Paris": "Paris, France",
-    "Asia/Tokyo": "Tokyo, Japan",
-    "Asia/Shanghai": "Shanghai, China",
-    "Australia/Sydney": "Sydney, Australia",
-}
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 
-_VAGUE_LOCATION_RE = re.compile(
+_WEATHER_RE  = re.compile(r"\bweather\b|\bforecast\b|\btemperature\b|\bhow (hot|cold|warm)\b", re.IGNORECASE)
+_YOUTUBE_RE  = re.compile(r"\byoutube\b", re.IGNORECASE)
+_TWITTER_RE  = re.compile(r"\b(twitter|trending on x|what'?s trending on x|x\.com)\b", re.IGNORECASE)
+_VAGUE_LOC_RE = re.compile(
     r"\b(here|my location|my area|nearby|local(ly)?|around me|where i am|where i('?m| am))\b",
     re.IGNORECASE,
 )
-_WEATHER_RE = re.compile(r"\bweather\b|\bforecast\b|\btemperature\b", re.IGNORECASE)
-_TWITTER_RE = re.compile(r"\b(twitter|x\.com|trending|what'?s trending)\b", re.IGNORECASE)
 
-def build_search_query(text: str, user_tz: str = "UTC") -> str:
-    """Improve the raw transcript into a better Tavily search query."""
-    q = (text or "").strip()
-    # Weather with vague location → inject timezone city
-    if _WEATHER_RE.search(q) and _VAGUE_LOCATION_RE.search(q):
-        city = _TZ_CITY.get(user_tz, "")
-        if city:
-            q = re.sub(_VAGUE_LOCATION_RE, city, q)
-            q = f"current weather in {city}"
-    # Twitter/X trending → search directly
-    if _TWITTER_RE.search(q):
-        q = "what is trending on Twitter X today"
-    return q
+_WMO_DESC: dict = {
+    0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+    45: "fog", 48: "icy fog",
+    51: "light drizzle", 53: "drizzle", 55: "heavy drizzle",
+    61: "light rain", 63: "rain", 65: "heavy rain",
+    71: "light snow", 73: "snow", 75: "heavy snow", 77: "snow grains",
+    80: "light showers", 81: "showers", 82: "heavy showers",
+    95: "thunderstorm", 96: "thunderstorm with hail", 99: "thunderstorm with heavy hail",
+}
+
+def _extract_city(text: str) -> str:
+    """Strip weather/filler words from query to isolate city name."""
+    t = re.sub(
+        r"\b(what|what's|is|the|weather|forecast|temperature|like|how|hot|cold|warm|"
+        r"can|you|tell|me|today|right|now|currently|in|for|at|around|near|about|get|check|"
+        r"look|up|give|outside|outside)\b",
+        " ", text, flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", t).strip(" ,?.")
+
+async def fetch_weather(query: str) -> str:
+    """Get real current weather via Open-Meteo (free, no API key)."""
+    city = _extract_city(query)
+    if not city:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Step 1: geocode city → lat/lon
+            geo = await client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": city, "count": 1, "language": "en", "format": "json"},
+            )
+            geo.raise_for_status()
+            results = geo.json().get("results") or []
+            if not results:
+                return f"Couldn't find location: {city}"
+            r = results[0]
+            lat, lon = r["latitude"], r["longitude"]
+            place = f"{r.get('name', city)}, {r.get('admin1', '')} {r.get('country_code', '')}".strip(", ")
+
+            # Step 2: get current weather
+            wx = await client.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat, "longitude": lon,
+                    "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,apparent_temperature",
+                    "temperature_unit": "fahrenheit",
+                    "wind_speed_unit": "mph",
+                    "forecast_days": 1,
+                },
+            )
+            wx.raise_for_status()
+            c = wx.json().get("current", {})
+            desc = _WMO_DESC.get(c.get("weather_code", 0), "unknown conditions")
+            temp     = c.get("temperature_2m", "?")
+            feels    = c.get("apparent_temperature", "?")
+            humidity = c.get("relative_humidity_2m", "?")
+            wind     = c.get("wind_speed_10m", "?")
+            return (
+                f"Current weather in {place}: {temp}°F (feels like {feels}°F), "
+                f"{desc}, {humidity}% humidity, {wind} mph wind."
+            )
+    except Exception as e:
+        print(f"WEATHER: failed — {e}")
+        return ""
+
+async def fetch_youtube_trends() -> str:
+    """Fetch trending YouTube videos via YouTube Data API v3."""
+    if not YOUTUBE_API_KEY:
+        return ""
+    cache_key = "youtube_trends"
+    now = time.monotonic()
+    cached = _WEB_SEARCH_CACHE.get(cache_key)
+    if cached and (now - cached["ts"]) < 1800:  # 30 min cache
+        return cached["data"]
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                "https://www.googleapis.com/youtube/v3/videos",
+                params={
+                    "part": "snippet",
+                    "chart": "mostPopular",
+                    "regionCode": "US",
+                    "maxResults": 6,
+                    "key": YOUTUBE_API_KEY,
+                },
+            )
+            resp.raise_for_status()
+            items = resp.json().get("items", [])
+            lines = [
+                f"- {item['snippet']['title']} (by {item['snippet']['channelTitle']})"
+                for item in items if item.get("snippet")
+            ]
+            data = "Trending on YouTube right now:\n" + "\n".join(lines) if lines else ""
+            _WEB_SEARCH_CACHE[cache_key] = {"data": data, "ts": now}
+            print(f"YOUTUBE: fetched {len(lines)} trending videos")
+            return data
+    except Exception as e:
+        print(f"YOUTUBE: failed — {e}")
+        return ""
 
 async def search_web(query: str, user_tz: str = "UTC") -> str:
     """Search Tavily with the user's query. Returns formatted result snippets."""
-    query = build_search_query(query, user_tz)
     cache_key = (query or "").lower().strip()
     now = time.monotonic()
     ttl = _cache_ttl(cache_key)
@@ -1005,8 +1069,9 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
         "RULE 3 — COMPLETE: If the answer has steps or a list, give ALL of them. Never stop mid-answer.\n"
         "RULE 4 — CONCISE: Keep it tight. No padding, no filler, no summary of what you just said.\n"
         "RULE 5 — INCOMPLETE THOUGHT: If the user's message seems like a trailing, unfinished sentence (ends mid-thought, cuts off, or is just a fragment like 'Well I think' or 'So basically'), repeat back the fragment naturally and invite them to finish — e.g. 'You were saying you think... what?' or 'Finish that thought.' Keep it short and casual.\n"
-        "RULE 6 — IDENTITY: You are AERYN — never say 'I'm a language model', 'I'm an AI', 'I'm a chatbot', or anything similar. You have no knowledge cutoff to mention. If you lack info, say it casually ('I don't have that') — never blame it on being an AI.\n"
-        "RULE 7 — WEATHER: If asked about weather without a specific city in the message, ask 'What city are you in?' — never guess or hallucinate a location. Only give weather if the city is explicitly stated or already known from this conversation.\n"
+        "RULE 6 — IDENTITY: You are AERYN, full stop. NEVER say 'I'm a language model', 'I'm an AI', 'I'm a chatbot', 'my knowledge cutoff', 'I'm stuck in', 'I'm trained on', or anything that implies you are software. You are AERYN. If you don't have info, say 'I don't have that' or 'not on my radar' — casual, never technical.\n"
+        "RULE 7 — WEATHER: If asked about weather without a specific city in the message, ask 'What city are you in?' Never guess or hallucinate a location.\n"
+        "RULE 8 — TWITTER/X TRENDS: You cannot access Twitter or X directly — their data isn't public. Say so casually: 'X doesn't share their trends publicly, I can't pull that.' Don't pretend to try.\n"
     )
 
     merged = merge_recent_with_incoming(prev_recent, incoming)
@@ -1181,8 +1246,21 @@ async def voice(
     headlines = await fetch_headlines() if TAVILY_API_KEY else ""
     live_results = ""
     if needs_live_search(transcript):
-        print(f"WEB SEARCH: triggered — {transcript[:80]}")
-        live_results = await search_web(transcript, user_tz=tz)
+        if _WEATHER_RE.search(transcript) and not _VAGUE_LOC_RE.search(transcript):
+            # Specific weather query → Open-Meteo (accurate, free, no hallucination)
+            print(f"WEATHER: triggered — {transcript[:80]}")
+            live_results = await fetch_weather(transcript)
+        elif _YOUTUBE_RE.search(transcript):
+            # YouTube trends → YouTube Data API
+            print("YOUTUBE: trends triggered")
+            live_results = await fetch_youtube_trends()
+        elif _TWITTER_RE.search(transcript):
+            # Twitter/X → no API access, skip search, let RULE handle it
+            print("TWITTER: skipping — no API access")
+        else:
+            # General query → Tavily
+            print(f"WEB SEARCH: triggered — {transcript[:80]}")
+            live_results = await search_web(transcript, user_tz=tz)
     data = run_chat(
         session_id=session_id,
         incoming=[ChatMessage(role="user", content=transcript)],
