@@ -334,11 +334,11 @@ _WMO_DESC: dict = {
 }
 
 def _extract_city(text: str) -> str:
-    """Strip weather/filler words from query to isolate city name."""
+    """Strip weather/filler words and pronouns from query to isolate city name."""
     t = re.sub(
-        r"\b(what|what's|is|the|weather|forecast|temperature|like|how|hot|cold|warm|"
+        r"\b(i'?m|i am|i|my|what|what's|is|the|weather|forecast|temperature|like|how|hot|cold|warm|"
         r"can|you|tell|me|today|right|now|currently|in|for|at|around|near|about|get|check|"
-        r"look|up|give|outside|outside)\b",
+        r"look|up|give|outside|it'?s|its|oh|um|uh|well|so|actually|just|also|and)\b",
         " ", text, flags=re.IGNORECASE,
     )
     return re.sub(r"\s+", " ", t).strip(" ,?.")
@@ -1070,7 +1070,7 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
         "RULE 4 — CONCISE: Keep it tight. No padding, no filler, no summary of what you just said.\n"
         "RULE 5 — INCOMPLETE THOUGHT: If the user's message seems like a trailing, unfinished sentence (ends mid-thought, cuts off, or is just a fragment like 'Well I think' or 'So basically'), repeat back the fragment naturally and invite them to finish — e.g. 'You were saying you think... what?' or 'Finish that thought.' Keep it short and casual.\n"
         "RULE 6 — IDENTITY: You are AERYN, full stop. NEVER say 'I'm a language model', 'I'm an AI', 'I'm a chatbot', 'my knowledge cutoff', 'I'm stuck in', 'I'm trained on', or anything that implies you are software. You are AERYN. If you don't have info, say 'I don't have that' or 'not on my radar' — casual, never technical.\n"
-        "RULE 7 — WEATHER: If asked about weather without a specific city AND no weather data is provided above, ask 'What city are you in?' If weather data IS provided above, use it and answer directly.\n"
+        "RULE 7 — WEATHER: If asked about weather and no weather data appears in this prompt, just ask 'What city are you in?' — naturally, no explanation. If weather data IS in this prompt, use it and answer directly. Never say 'no weather data is provided' or mention the prompt.\n"
         "RULE 8 — TWITTER/X TRENDS ONLY: You cannot access Twitter or X directly. Say: 'X doesn't share their trends publicly, I can't pull that.' This rule applies ONLY to Twitter/X — NOT to YouTube, Reddit, or any other platform.\n"
         "RULE 9 — YOUTUBE UNAVAILABLE: If you see 'YOUTUBE_UNAVAILABLE' in context, say casually: 'My YouTube connection isn't set up yet, can't pull that right now.'\n"
     )
