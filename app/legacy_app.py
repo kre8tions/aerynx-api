@@ -1106,8 +1106,8 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
 
         groq_msgs.extend(merged)
 
-    raw = call_groq_chat(groq_msgs, temperature=groq_temp)
-    out = enforce_spoken_only(sanitize_output(raw))
+        raw = call_groq_chat(groq_msgs, temperature=groq_temp)
+        out = enforce_spoken_only(sanitize_output(raw))
 
     new_recent = merged + [{"role": "assistant", "content": out}]
     new_recent = [
@@ -1246,22 +1246,22 @@ async def voice(
     # --- CHAT ---
     headlines = await fetch_headlines() if TAVILY_API_KEY else ""
     live_results = ""
-    if needs_live_search(transcript):
-        if _YOUTUBE_RE.search(transcript):
-            # YouTube trends → YouTube Data API
-            print("YOUTUBE: trends triggered")
-            live_results = await fetch_youtube_trends()
-        elif _TWITTER_RE.search(transcript):
-            # Twitter/X → no API access, skip search, let RULE handle it
-            print("TWITTER: skipping — no API access")
-        elif _WEATHER_RE.search(transcript) and not _VAGUE_LOC_RE.search(transcript):
-            # Specific weather query → Open-Meteo (accurate, free, no hallucination)
-            print(f"WEATHER: triggered — {transcript[:80]}")
-            live_results = await fetch_weather(transcript)
-        else:
-            # General query → Tavily
-            print(f"WEB SEARCH: triggered — {transcript[:80]}")
-            live_results = await search_web(transcript, user_tz=tz)
+    # Route to the right live-data source. YouTube and weather are checked first
+    # without requiring needs_live_search() — their own regexes are the gate.
+    if _YOUTUBE_RE.search(transcript):
+        print("YOUTUBE: trends triggered")
+        live_results = await fetch_youtube_trends()
+    elif _TWITTER_RE.search(transcript):
+        # Twitter/X → no API access, skip search, let RULE handle it
+        print("TWITTER: skipping — no API access")
+    elif _WEATHER_RE.search(transcript) and not _VAGUE_LOC_RE.search(transcript):
+        # Any weather query with a non-vague location → Open-Meteo
+        print(f"WEATHER: triggered — {transcript[:80]}")
+        live_results = await fetch_weather(transcript)
+    elif needs_live_search(transcript):
+        # General live query → Tavily
+        print(f"WEB SEARCH: triggered — {transcript[:80]}")
+        live_results = await search_web(transcript, user_tz=tz)
 
     # Also check if this looks like a city follow-up to a prior weather question
     # (user answered "What city are you in?" with a city name)
