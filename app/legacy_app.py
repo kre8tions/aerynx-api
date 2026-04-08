@@ -1263,14 +1263,22 @@ async def voice(
         print(f"WEB SEARCH: triggered — {transcript[:80]}")
         live_results = await search_web(transcript, user_tz=tz)
 
-    # Also check if this looks like a city follow-up to a prior weather question
-    # (user answered "What city are you in?" with a city name)
-    if not live_results and not needs_live_search(transcript):
+    # Follow-up detection: check session history for context from prior turn
+    if not live_results:
         recent = get_session(session_id)[1]  # prev_recent messages
         last_aerynx = next((m.get("content","") for m in reversed(recent) if m.get("role") == "assistant"), "")
+
+        # City follow-up: user answered "What city are you in?" with a city name
         if "what city are you in" in last_aerynx.lower() and len(transcript.split()) <= 6:
             print(f"WEATHER: city follow-up detected — {transcript[:40]}")
             live_results = await fetch_weather(transcript)
+
+        # YouTube follow-up: "what else is trending?" / "next" / "more" after a YouTube response
+        elif "youtube" in last_aerynx.lower() or "trending on youtube" in last_aerynx.lower():
+            _followup = re.compile(r"\b(what else|next|more|another|anything else|and|also|keep going|continue)\b", re.IGNORECASE)
+            if _followup.search(transcript):
+                print(f"YOUTUBE: follow-up detected — {transcript[:40]}")
+                live_results = await fetch_youtube_trends()  # returns from 30-min cache, instant
     data = run_chat(
         session_id=session_id,
         incoming=[ChatMessage(role="user", content=transcript)],
