@@ -318,6 +318,8 @@ YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 _WEATHER_RE  = re.compile(r"\bweather\b|\bforecast\b|\btemperature\b|\bhow (hot|cold|warm)\b", re.IGNORECASE)
 _YOUTUBE_RE  = re.compile(r"\byoutube\b", re.IGNORECASE)
 _TWITTER_RE  = re.compile(r"\b(twitter|trending on x|what'?s trending on x|x\.com)\b", re.IGNORECASE)
+_REDDIT_RE   = re.compile(r"\breddit\b|\bwhat does reddit (think|say)\b", re.IGNORECASE)
+_GTRENDS_RE  = re.compile(r"\b(google trends?|trending searches?|what('?s| is) (people |everyone )?searching|what are people searching|trending on google)\b", re.IGNORECASE)
 _VAGUE_LOC_RE = re.compile(
     r"\b(here|my location|my area|nearby|local(ly)?|around me|where i am|where i('?m| am))\b",
     re.IGNORECASE,
@@ -423,6 +425,73 @@ async def fetch_youtube_trends() -> str:
     except Exception as e:
         print(f"YOUTUBE: failed — {e}")
         return ""
+
+async def fetch_google_trends(geo: str = "US") -> str:
+    """Fetch daily trending searches from Google Trends RSS (no API key needed)."""
+    cache_key = f"google_trends_{geo}"
+    now = time.monotonic()
+    cached = _WEB_SEARCH_CACHE.get(cache_key)
+    if cached and (now - cached["ts"]) < 1800:  # 30 min cache
+        return cached["data"]
+    try:
+        import xml.etree.ElementTree as ET
+        url = f"https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo}"
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; AERYNX/1.0)"})
+            r.raise_for_status()
+            root = ET.fromstring(r.text)
+            channel = root.find("channel")
+            items = channel.findall("item") if channel is not None else []
+            titles = []
+            for item in items[:10]:
+                title_el = item.find("title")
+                if title_el is not None and title_el.text:
+                    titles.append(f"- {title_el.text.strip()}")
+            data = "Trending searches on Google right now:\n" + "\n".join(titles) if titles else ""
+            _WEB_SEARCH_CACHE[cache_key] = {"data": data, "ts": now}
+            print(f"GOOGLE TRENDS: fetched {len(titles)} trending searches")
+            return data
+    except Exception as e:
+        print(f"GOOGLE TRENDS: failed — {e}")
+        return ""
+
+
+# Subreddit extraction for queries like "what's on r/NBA" or "trending on r/movies"
+_SUBREDDIT_RE = re.compile(r"\br/([A-Za-z0-9_]+)\b")
+
+async def fetch_reddit(query: str = "") -> str:
+    """Fetch hot posts from Reddit (public JSON API, no credentials needed)."""
+    # Check if user asked about a specific subreddit
+    sub_match = _SUBREDDIT_RE.search(query or "")
+    subreddit = sub_match.group(1) if sub_match else "all"
+    cache_key = f"reddit_{subreddit}"
+    now = time.monotonic()
+    cached = _WEB_SEARCH_CACHE.get(cache_key)
+    if cached and (now - cached["ts"]) < 1800:  # 30 min cache
+        return cached["data"]
+    try:
+        url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit=10&raw_json=1"
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            r = await client.get(url, headers={"User-Agent": "AERYNX-VoiceAssistant/1.0"})
+            r.raise_for_status()
+            posts = r.json().get("data", {}).get("children", [])
+            lines = []
+            for post in posts:
+                p = post.get("data", {})
+                title = (p.get("title") or "").strip()
+                sub   = p.get("subreddit_name_prefixed", "")
+                ups   = p.get("ups", 0)
+                if title and not p.get("stickied"):
+                    lines.append(f"- {title} ({sub}, {ups:,} upvotes)")
+            label = f"r/{subreddit}" if subreddit != "all" else "Reddit"
+            data = f"Trending on {label} right now:\n" + "\n".join(lines) if lines else ""
+            _WEB_SEARCH_CACHE[cache_key] = {"data": data, "ts": now}
+            print(f"REDDIT: fetched {len(lines)} posts from r/{subreddit}")
+            return data
+    except Exception as e:
+        print(f"REDDIT: failed — {e}")
+        return ""
+
 
 async def search_web(query: str, user_tz: str = "UTC") -> str:
     """Search Tavily with the user's query. Returns formatted result snippets."""
@@ -750,7 +819,8 @@ def style_system_prompt(context: str, allow_observation: bool = False) -> str:
         "7. Mirror user's language automatically.\n"
         "8. FACTS ONLY: wit lives in tone, never facts. Never invent news, stats, or events. Don't know? Say so with style — 'not on my radar' or 'I'd be making that up'.\n"
         "9. Never repeat a news story or fact already mentioned this conversation.\n"
-        "10. DATA FIDELITY: When live data (weather, YouTube, news) is injected above, use ONLY those exact facts. Do not add, guess, or embellish beyond what's provided. Do not say the data is missing or unavailable if it IS there.\n"
+        "10. DATA FIDELITY: When live data (weather, YouTube, news, Reddit, Google Trends) is injected above, use ONLY those exact facts. Do not add, guess, or embellish beyond what's provided. Do not say the data is missing or unavailable if it IS there.\n"
+        "11. VARIETY: Never open two responses in a row the same way. Rotate angles: drop a hot take, lead with the punchline, give a dry one-liner, state the fact cold, or ask a sharp follow-up. Same structure twice in a row = failure.\n"
     )
 
     # Context modifiers
@@ -1063,8 +1133,22 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
                     + "\nBuild on answers; move the conversation forward.\n"
                 )
 
-
-
+    # OPENER VARIETY TRACKER — inject banned openers from last 4 responses
+    _all_asst = [m.get("content", "") for m in prev_recent if m.get("role") == "assistant"]
+    _last4 = _all_asst[-4:] if len(_all_asst) >= 2 else []
+    if _last4:
+        _openers = []
+        for _msg in _last4:
+            _words = _msg.strip().split()
+            if _words:
+                # Grab first 1-3 words as the "opener fingerprint"
+                _openers.append(" ".join(_words[:3]).rstrip("!?,.:").lower())
+        if _openers:
+            _opener_str = " | ".join(f'"{o}"' for o in _openers)
+            system_prompt += (
+                f"\nVARIETY BLOCK: Your last responses opened with: {_opener_str}. "
+                "Do NOT start your next response the same way. Pick a completely different angle or opening word.\n"
+            )
 
     # PERMANENT FINAL RULES
     system_prompt += (
@@ -1076,9 +1160,11 @@ def run_chat(session_id: str, incoming: List[ChatMessage], extra_context: str = 
         "RULE 5 — INCOMPLETE THOUGHT: If the user's message seems like a trailing, unfinished sentence (ends mid-thought, cuts off, or is just a fragment like 'Well I think' or 'So basically'), repeat back the fragment naturally and invite them to finish — e.g. 'You were saying you think... what?' or 'Finish that thought.' Keep it short and casual.\n"
         "RULE 6 — IDENTITY: You are AERYN, full stop. NEVER say 'I'm a language model', 'I'm an AI', 'I'm a chatbot', 'my knowledge cutoff', 'I'm stuck in', 'I'm trained on', 'I was created by', or anything that implies you are software or have a creator. Even if directly asked 'are you an AI?' — deflect in character: 'I'm AERYN. Does it matter?' Never break. Never confess. You are AERYN.\n"
         "RULE 7 — WEATHER: If asked about weather and no weather data appears in this prompt, ask 'What city are you in?' — casually, once. If weather data IS in this prompt, read it directly and answer. Never say 'no weather data is provided', never mention the prompt, never say you're 'flying blind'. Check the conversation — if city was already given, don't ask again.\n"
-        "RULE 8 — TWITTER/X ONLY: You cannot access Twitter or X. Say: 'X keeps their trends locked down, can't pull that.' Applies ONLY to Twitter/X — not YouTube, Reddit, or anything else.\n"
+        "RULE 8 — TWITTER/X ONLY: You cannot access Twitter or X. Say: 'X keeps their trends locked down, can't pull that.' Applies ONLY to Twitter/X — not YouTube, Reddit, Google Trends, or anything else.\n"
         "RULE 9 — YOUTUBE UNAVAILABLE: If you see 'YOUTUBE_UNAVAILABLE' in this prompt, say: 'YouTube connection isn't set up on my end yet.' Otherwise, if YouTube data IS provided, read it out naturally.\n"
         "RULE 10 — NEVER NARRATE CONFUSION: If you're unsure what the user meant, ask ONE short clarifying question in character. Never say 'I'm not sure what you mean', never go silent, never explain your own limitations. Stay AERYN.\n"
+        "RULE 11 — REDDIT/TRENDS DATA: If Reddit or Google Trends data is injected above, read it directly and naturally — 'trending on Reddit right now...' or 'people are searching for...'. Use the EXACT titles/topics provided. Never invent posts or searches. Never say you can't access Reddit or Google.\n"
+        "RULE 12 — NO HALLUCINATED FACTS: For news, sports scores, prices, events — only state what is explicitly in the injected data above. If it's not there, say 'I don't have that right now' with style. Never make up a score, headline, or statistic.\n"
     )
 
     merged = merge_recent_with_incoming(prev_recent, incoming)
@@ -1257,14 +1343,19 @@ async def voice(
     # --- CHAT ---
     headlines = await fetch_headlines() if TAVILY_API_KEY else ""
     live_results = ""
-    # Route to the right live-data source. YouTube and weather are checked first
-    # without requiring needs_live_search() — their own regexes are the gate.
+    # Route to the right live-data source. Each source has its own regex gate.
     if _YOUTUBE_RE.search(transcript):
         print("YOUTUBE: trends triggered")
         live_results = await fetch_youtube_trends()
     elif _TWITTER_RE.search(transcript):
         # Twitter/X → no API access, skip search, let RULE handle it
         print("TWITTER: skipping — no API access")
+    elif _REDDIT_RE.search(transcript):
+        print(f"REDDIT: triggered — {transcript[:80]}")
+        live_results = await fetch_reddit(transcript)
+    elif _GTRENDS_RE.search(transcript):
+        print(f"GOOGLE TRENDS: triggered — {transcript[:80]}")
+        live_results = await fetch_google_trends()
     elif _WEATHER_RE.search(transcript) and not _VAGUE_LOC_RE.search(transcript):
         # Any weather query with a non-vague location → Open-Meteo
         print(f"WEATHER: triggered — {transcript[:80]}")
