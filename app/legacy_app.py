@@ -1236,11 +1236,16 @@ async def voice(
 ):
     require_api_key(authorization)
 
+    # --- DEBUG ---
+    print(f"VOICE: request received — session={session_id} tz={tz}")
+
     # --- STT ---
     audio_bytes = await audio.read()
+    print(f"VOICE: audio received — {len(audio_bytes)} bytes")
     transcript = groq_stt(audio.filename or "audio.bin", audio_bytes)
-    # Quality gate: reject ambient noise (< 2 words)
-    if len(transcript.strip().split()) < 2:
+    print(f"VOICE: STT transcript — '{transcript}'")
+    # Quality gate: reject ambient noise (empty transcript)
+    if len(transcript.strip().split()) < 1 or not transcript.strip():
         return JSONResponse({
             "transcript": transcript,
             "response": "",
