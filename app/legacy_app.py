@@ -1268,6 +1268,92 @@ def chat(
     return JSONResponse(data)
 
 
+@app.get("/greeting")
+@limiter.limit("10/minute")
+async def greeting_endpoint(
+    request: Request,
+    name: str = "there",
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Generate a dynamic conversational greeting using live trending data.
+    Randomly picks from Reddit, Google Trends, or news headlines.
+    Returns {text, audio_base64}.
+    """
+    require_api_key(authorization)
+
+    import random
+
+    # Randomly pick a live data source — weight news/reddit slightly higher
+    source = random.choice(["reddit", "reddit", "google_trends", "news", "news", "news"])
+    data = ""
+    try:
+        if source == "reddit":
+            data = await fetch_reddit()
+        elif source == "google_trends":
+            data = await fetch_google_trends()
+        else:
+            data = await fetch_headlines()
+    except Exception as e:
+        print(f"GREETING: data fetch failed — {e}")
+
+    display_name = (name or "").strip() or "there"
+
+    # Fallback pool if no live data
+    fallback_pool = [
+        f"Hey {display_name}! What are we getting into?",
+        f"Oh good, it's {display_name}. I was getting bored.",
+        f"{display_name}. Finally. What's on your mind?",
+        f"Hey {display_name}, what's good?",
+        f"Welcome back, {display_name}. Ready when you are.",
+    ]
+
+    if not data:
+        greeting_text = random.choice(fallback_pool)
+    else:
+        greeting_msgs = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are AERYN — sharp, funny, Gen Z casual AI. "
+                    f"Write a single spoken greeting for {display_name}. "
+                    "Rules: ONE or TWO sentences max. Under 35 words total. "
+                    "Casually drop ONE interesting, wild, or funny thing from the trending data below — "
+                    "like you just saw it and can't stop thinking about it. "
+                    "Sound like you're catching up with a friend, NOT reading a bulletin. "
+                    "Do NOT list multiple items. Do NOT start with 'I'. "
+                    "Do NOT ask a question — just drop the take and leave it. "
+                    "Use AERYN's voice: quick, punchy, Gen Z. Vary how you open each time."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Trending data:\n{data[:800]}\n\nGreeting for {display_name}:",
+            },
+        ]
+        try:
+            raw = call_groq_chat(greeting_msgs, temperature=1.1)
+            greeting_text = enforce_spoken_only(sanitize_output(raw))
+            if not greeting_text or len(greeting_text.strip()) < 8:
+                raise ValueError("empty")
+        except Exception as e:
+            print(f"GREETING: LLM failed — {e}")
+            greeting_text = random.choice(fallback_pool)
+
+    # TTS
+    audio_b64 = ""
+    try:
+        controls = select_tts_controls("default")
+        audio_out = cartesia_tts(greeting_text, speed=controls["speed"], emotion=controls.get("emotion"))
+        audio_b64 = base64.b64encode(audio_out).decode("utf-8")
+    except Exception as tts_err:
+        import logging as _log
+        _log.getLogger(__name__).warning("GREETING TTS failed: %s", tts_err)
+
+    print(f"GREETING: '{greeting_text[:80]}'")
+    return JSONResponse({"text": greeting_text, "audio_base64": audio_b64})
+
+
 @app.post("/stt")
 @limiter.limit("20/minute")
 async def stt(
